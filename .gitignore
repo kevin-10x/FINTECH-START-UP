@@ -1,0 +1,11 @@
+node_modules/
+*.env
+.env.local
+__pycache__/
+ai/model.pkl
+/mobile/flutter_microbank/.dart_tool/
+/mobile/flutter_microbank/.idea/
+/.vscode/
+db_data/
+*.pyc
+*.pkl
