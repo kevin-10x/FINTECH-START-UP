@@ -18,6 +18,14 @@ services:
     environment:
       - DATABASE_URL=postgres://micro:micropass@db:5432/microbank
       - PORT=5000
+      - SAFARICOM_CONSUMER_KEY=
+      - SAFARICOM_CONSUMER_SECRET=
+      - MPESA_SHORTCODE=
+      - MPESA_PASSKEY=
+      - MPESA_CALLBACK_URL=http://host.docker.internal:5000/api/mpesa/callback
+      - TWILIO_SID=
+      - TWILIO_AUTH_TOKEN=
+      - TWILIO_PHONE_NUMBER=
     ports:
       - '5000:5000'
 

@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const { spawn } = require('child_process');
 const axios = require('axios');
 const mpesa = require('./services/mpesa');
+const sms = require('./services/sms');
 
 dotenv.config();
 
@@ -21,10 +22,14 @@ function generateOtpCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// Use pluggable SMS provider
 async function sendSmsSimulation(phone, message) {
-  // Replace with real SMS provider integration. For now log and return true.
-  console.log(`SMS to ${phone}: ${message}`);
-  return true;
+  try {
+    return await sms.sendSms(phone, message);
+  } catch (err) {
+    console.error('sms send failed', err.message);
+    return false;
+  }
 }
 
 function authenticateToken(req, res, next) {
@@ -138,6 +143,61 @@ app.post('/api/mpesa/stk', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'mpesa error', detail: err.message });
+  }
+});
+
+// MPesa callback (Daraja) — handles STK push and B2C callbacks
+app.post('/api/mpesa/callback', async (req, res) => {
+  try {
+    const body = req.body;
+    console.log('mpesa callback', JSON.stringify(body).slice(0, 2000));
+
+    // Save callback payload for auditing
+    const id = uuidv4();
+    await pool.query('INSERT INTO transactions(id, sender_wallet, receiver_wallet, amount, transaction_type, status) VALUES($1,$2,$3,$4,$5,$6)', [id, null, null, 0, 'mpesa_callback', 'RECEIVED']);
+
+    // Daraja STK callback structure: body.Body.stkCallback
+    const cb = body?.Body?.stkCallback || body?.Body?.stkPushCallback || null;
+    if (cb) {
+      const merchantRequestID = cb.MerchantRequestID || cb.CheckoutRequestID || null;
+      const resultCode = cb.ResultCode || (cb.Result?.ResultCode);
+      const resultDesc = cb.ResultDesc || (cb.Result?.ResultDesc) || JSON.stringify(cb);
+
+      // Insert a record for this result
+      await pool.query('INSERT INTO transactions(id, sender_wallet, receiver_wallet, amount, transaction_type, status) VALUES($1,$2,$3,$4,$5,$6)', [uuidv4(), null, null, 0, 'mpesa_stk_callback', resultDesc.substring(0,50)]);
+
+      // If success, you could update loans or wallet balances here using cb.CallbackMetadata
+      // Parse CallbackMetadata for Amount and MpesaReceiptNumber
+      const metadata = cb?.CallbackMetadata?.Item || [];
+      const metaObj = {};
+      for (const it of metadata) {
+        metaObj[it.Name] = it.Value;
+      }
+
+      if (resultCode === 0) {
+        // Example: credit user wallet by amount if metadata has PhoneNumber
+        const phone = metaObj['PhoneNumber'] || metaObj['Phone'] || null;
+        const amount = metaObj['Amount'] || 0;
+        if (phone) {
+          // find user and wallet
+          const u = await pool.query('SELECT id FROM users WHERE phone=$1', [phone]);
+          if (u.rows.length > 0) {
+            const userId = u.rows[0].id;
+            const w = await pool.query('SELECT id FROM wallets WHERE user_id=$1', [userId]);
+            if (w.rows.length > 0) {
+              const walletId = w.rows[0].id;
+              await pool.query('UPDATE wallets SET balance = balance + $1 WHERE id=$2', [amount, walletId]);
+              await pool.query('INSERT INTO transactions(id, sender_wallet, receiver_wallet, amount, transaction_type, status) VALUES($1,$2,$3,$4,$5,$6)', [uuidv4(), null, walletId, amount, 'mpesa_deposit', 'COMPLETED']);
+            }
+          }
+        }
+      }
+    }
+
+    res.status(200).json({ Received: true });
+  } catch (err) {
+    console.error('mpesa callback error', err);
+    res.status(500).json({ error: 'callback processing failed' });
   }
 });
 
